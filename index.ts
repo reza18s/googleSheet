@@ -4,7 +4,7 @@ import retry from "async-retry";
 import { formatISO, parseISO } from "date-fns"; // To manage timestamps
 import { GoogleSpreadsheet } from "google-spreadsheet";
 import { JWT } from "google-auth-library";
-interface Data {
+interface DataType {
   id: number;
   name: string;
   image: string;
@@ -15,6 +15,7 @@ interface Data {
   success: boolean;
   socialId: string | null;
   data: string;
+  type: string;
   orderStatus: string | null;
   createdAt: string; // Added createdAt to filter data
 }
@@ -45,7 +46,7 @@ const apiClient = axios.create({
     Authorization: `Bearer ${process.env.STRAPI_KEY}`,
   },
 });
-
+const object = {};
 const LAST_REQUEST_FILE = "lastRequestTime.json";
 
 // Function to get the last request time from a file
@@ -80,7 +81,6 @@ const getData = async (endpoint: string): Promise<Res> => {
         },
       },
     );
-    console.log(JSON.stringify(response.data.data[1]));
     return response.data;
   } catch (error) {
     console.error("Error fetching data from Strapi:", error);
@@ -88,7 +88,10 @@ const getData = async (endpoint: string): Promise<Res> => {
   }
 };
 
-const postData = async (url: string, data: Data[]): Promise<void> => {
+const postData = async (
+  url: string,
+  data: { [key: string]: DataType[] },
+): Promise<void> => {
   try {
     const serviceAccountAuth = new JWT({
       email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
@@ -101,49 +104,90 @@ const postData = async (url: string, data: Data[]): Promise<void> => {
       serviceAccountAuth,
     );
     await doc.loadInfo();
-    const sheet = doc.sheetsByIndex[0];
-    await sheet.addRows(data);
+    Object.keys(data).map(async (key) => {
+      if (key) {
+        const sheet = doc.sheetsByTitle[key]; // Access as an object, not a function
+        if (sheet) {
+          await sheet.addRows(data[key]); // Add rows to the sheet
+        } else {
+          console.error(`Sheet with title "${key}" not found.`);
+        }
+      }
+    });
   } catch (error) {
     console.error("Error during POST request:", error);
   }
 };
 
+const regex = /قاب انتخاب شده:\s*([\w\s]+)/g;
 (async () => {
   try {
     const lastRequestTime = getLastRequestTime();
 
     const res: Res = await getData(
-      `api/orders/?sort=createdAt&pagination[pageSize]=${process.env.LIMIT || 100}&pagination[page]=${process.env.PAGE || 1}`,
+      `api/orders/?sort=createdAt:DESC&pagination[pageSize]=${process.env.LIMIT || 100}&pagination[page]=${process.env.PAGE || 1}`,
     );
-    const data: Data[] = res.data
+    const res1 = await getData(`api/phone-case-types`);
+    console.log(JSON.stringify(res1.data.map((i) => i.attributes.name)));
+    const data: { [key: string]: DataType[] } = {};
+    res.data
       .filter(({ attributes }) => {
         if (!attributes.success) return false;
-
         // Filter data based on the last request time
-        if (lastRequestTime) {
-          const createdAt = parseISO(attributes.createdAt);
-          const lastTime = parseISO(lastRequestTime);
-          return createdAt > lastTime;
-        }
+        // if (lastRequestTime) {
+        //   const createdAt = parseISO(attributes.createdAt);
+        //   const lastTime = parseISO(lastRequestTime);
+        //   return createdAt > lastTime;
+        // }
 
         return true;
       })
-      .map(({ id, attributes }) => ({
-        id,
-        name: attributes.name || "",
-        image: attributes.image || "",
-        email: attributes.email || "",
-        phoneNumber: attributes.phoneNumber || "",
-        address: attributes.address || "",
-        postCode: attributes.postCode || "",
-        success: attributes.success,
-        socialId: attributes.socialId || null,
-        data: attributes.data || "",
-        orderStatus: attributes.orderStatus || null,
-        createdAt: attributes.createdAt, // Pass createdAt for future reference
-      }));
+      .map(({ id, attributes }) => {
+        const type = regex.exec(attributes.data)?.[1].trim() || "not";
+        console.log(`'${type}'`);
+        if (data[type]) {
+          data[type] = [
+            ...data[type],
+            {
+              id,
+              name: attributes.name || "",
+              image: attributes.image || "",
+              email: attributes.email || "",
+              phoneNumber: attributes.phoneNumber || "",
+              address: attributes.address || "",
+              postCode: attributes.postCode || "",
+              success: attributes.success,
+              socialId: attributes.socialId || null,
+              data: attributes.data || "",
+              orderStatus: attributes.orderStatus || null,
+              type: type,
+              createdAt: attributes.createdAt,
+            },
+          ];
+        } else {
+          data[type] = [
+            {
+              id,
+              name: attributes.name || "",
+              image: attributes.image || "",
+              email: attributes.email || "",
+              phoneNumber: attributes.phoneNumber || "",
+              address: attributes.address || "",
+              postCode: attributes.postCode || "",
+              success: attributes.success,
+              socialId: attributes.socialId || null,
+              data: attributes.data || "",
+              orderStatus: attributes.orderStatus || null,
+              type: type,
+              createdAt: attributes.createdAt,
+            },
+          ];
+        }
 
-    if (data.length === 0) {
+        // Pass createdAt for future reference
+      });
+
+    if (Object.keys(data).length === 0) {
       console.warn("No new successful orders found to post.");
       return;
     }
